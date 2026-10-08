@@ -1,0 +1,125 @@
+# 东财两融日报
+# 依赖用 uv 管理: uv sync 对齐环境, uv add/uv add --dev 增删依赖
+
+[project]
+name = "eastmoneyrzrq"
+version = "0.1.0"
+description = "抓取东方财富融资融券历史数据, 生成日报图并推送企业微信"
+authors = [{ name = "blashark", email = "blashark@qq.com" }]
+readme = "README.md"
+requires-python = ">=3.13"
+keywords = ["融资融券", "两融", "pyecharts", "eastmoney"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "httpx>=0.28.1",
+    "playwright>=1.57.0",
+    "polars>=1.37.1",
+    "pyecharts>=2.0.9",
+    "python-dotenv>=1.2.4",
+]
+
+[project.scripts]
+eastmoneyrzrq = "eastmoneyrzrq.cli:main"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.168.5",
+    "pre-commit>=4.6.2",
+    "pyright>=1.1.414",
+    "pytest>=8.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.10",
+]
+
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["eastmoneyrzrq*"]
+
+# Ruff: 格式化与静态检查
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+extend-exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle error
+    "W",   # pycodestyle warning
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "UP",  # pyupgrade
+    "PTH", # flake8-use-pathlib
+    "D",   # pydocstyle
+    "RUF", # ruff 自带规则
+]
+ignore = [
+    "D203", # 与 D211 冲突, 采用 D211 的空行约定
+    "D213", # 与 D212 冲突, 摘要行紧跟引号
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D103", "D101", "D102", "S101"]
+
+# Pyright: 标准模式类型检查
+[tool.pyright]
+typeCheckingMode = "standard"
+pythonVersion = "3.13"
+venvPath = "."
+venv = ".venv"
+include = ["src", "tests"]
+exclude = [".venv", "build", "dist", "**/__pycache__"]
+reportMissingTypeStubs = "warning"
+reportUnnecessaryTypeIgnoreComment = true
+
+# Pytest: 单元测试与属性测试
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=eastmoneyrzrq",
+    "--cov-report=term-missing",
+    "--cov-report=html:htmlcov",
+]
+markers = [
+    "slow: 运行较慢的测试",
+    "integration: 集成测试, 会真的读写文件或浏览器",
+]
+
+# Coverage: 覆盖率门禁
+[tool.coverage.run]
+source = ["src/eastmoneyrzrq"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+exclude_lines = [
+    "if TYPE_CHECKING:",
+    "if __name__ == \"__main__\":",
+    "raise NotImplementedError",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
