@@ -9,7 +9,6 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-import httpx
 import polars as pl
 import pytest
 from pyecharts.charts import Bar, Line, Page
@@ -134,91 +133,6 @@ def test_sign_colored_data_swaps_colors_when_positive_is_down() -> None:
 # --------------------------------------------------------------------------- #
 # check_assets_server
 # --------------------------------------------------------------------------- #
-
-
-def test_check_assets_server_port_closed(monkeypatch: pytest.MonkeyPatch, closed_port: int) -> None:
-    monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
-    monkeypatch.setenv(config.ASSETS_PORT_ENV, str(closed_port))
-    assert charts.check_assets_server(timeout=1.0) is False
-
-
-def test_check_assets_server_ok(
-    monkeypatch: pytest.MonkeyPatch,
-    listening_port: int,
-    make_client: Any,
-) -> None:
-    monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
-    monkeypatch.setenv(config.ASSETS_PORT_ENV, str(listening_port))
-    seen: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(str(request.url))
-        return httpx.Response(200, json={"ok": True})
-
-    client = make_client(handler)
-    try:
-        assert charts.check_assets_server(timeout=1.0, client=client) is True
-    finally:
-        client.close()
-    assert seen == [config.assets_probe_url()]
-
-
-def test_check_assets_server_rejects_non_200(
-    monkeypatch: pytest.MonkeyPatch,
-    listening_port: int,
-    make_client: Any,
-) -> None:
-    monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
-    monkeypatch.setenv(config.ASSETS_PORT_ENV, str(listening_port))
-    seen: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(str(request.url))
-        return httpx.Response(404)
-
-    client = make_client(handler)
-    try:
-        assert charts.check_assets_server(timeout=1.0, client=client) is False
-    finally:
-        client.close()
-    assert seen == [config.assets_probe_url()]
-
-
-def test_check_assets_server_survives_connect_error(
-    monkeypatch: pytest.MonkeyPatch,
-    listening_port: int,
-    make_client: Any,
-) -> None:
-    monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
-    monkeypatch.setenv(config.ASSETS_PORT_ENV, str(listening_port))
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("模拟连接失败", request=request)
-
-    client = make_client(handler)
-    try:
-        assert charts.check_assets_server(timeout=1.0, client=client) is False
-    finally:
-        client.close()
-
-
-def test_check_assets_server_uses_httpx_get_without_client(
-    monkeypatch: pytest.MonkeyPatch,
-    listening_port: int,
-) -> None:
-    """不注入 client 时走 httpx.get 分支, 子进程/cli 场景就是这个路径."""
-    monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
-    monkeypatch.setenv(config.ASSETS_PORT_ENV, str(listening_port))
-    seen: list[tuple[str, float]] = []
-
-    def fake_get(url: str, timeout: float) -> httpx.Response:
-        seen.append((url, timeout))
-        return httpx.Response(200, json={"ok": True})
-
-    monkeypatch.setattr(charts.httpx, "get", fake_get)
-
-    assert charts.check_assets_server(timeout=1.5) is True
-    assert seen == [(config.assets_probe_url(), 1.5)]
 
 
 # --------------------------------------------------------------------------- #

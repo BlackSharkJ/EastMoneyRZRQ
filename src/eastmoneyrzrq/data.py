@@ -1,15 +1,14 @@
-"""融资融券数据的获取与本地历史缓存.
+"""融资融券数据的获取与解析.
 
 东财接口返回的是 JSONP (外面裹了一层 callback), 所以解析时要先剥壳.
 所有对外函数都允许注入 httpx.Client, 方便测试里换成 MockTransport, 不需要真连网.
+落库与读取由 storage 模块负责, 这里只管把网络上的数据变成 DataFrame.
 """
 
-import io
 import json
 import logging
 import time
 from datetime import date
-from pathlib import Path
 from typing import Any, Final
 
 import httpx
@@ -60,7 +59,7 @@ COLUMN_MAPPING: Final[dict[str, str]] = {
     "RZRQYECZ": "融资融券余额差额",
 }
 
-# 绘图需要的列, 顺序即 CSV 的列顺序
+# 绘图与落库需要的列, 顺序即 DataFrame 的列顺序
 OUTPUT_COLUMNS: Final[tuple[str, ...]] = (
     "日期",
     "融资余额",
@@ -282,50 +281,3 @@ def latest_date(df: pl.DataFrame) -> date:
         最新日期.
     """
     return df[DATE_COLUMN][-1]
-
-
-def write_history_csv(df: pl.DataFrame, path: Path = config.HISTORY_CSV_PATH) -> Path:
-    """把数据写入本地 CSV, 带 UTF-8 BOM.
-
-    Parameters
-    ----------
-    df : pl.DataFrame
-        待写入的数据.
-    path : Path, default=config.HISTORY_CSV_PATH
-        输出路径.
-
-    Returns
-    -------
-    Path
-        实际写入的路径.
-
-    Notes
-    -----
-    先写进 BytesIO 再落盘, 一是绕开 polars 对中文路径的处理问题, 二是可以手动控制 BOM,
-    这样 Excel 打开不会中文乱码.
-    """
-    buffer = io.BytesIO()
-    df.write_csv(buffer, include_bom=True)
-    path.write_bytes(buffer.getvalue())
-    logger.info(f"已写入本地历史数据: {path}")
-    return path
-
-
-def read_history_csv(path: Path = config.HISTORY_CSV_PATH) -> pl.DataFrame | None:
-    """读取本地历史 CSV.
-
-    Parameters
-    ----------
-    path : Path, default=config.HISTORY_CSV_PATH
-        输入路径.
-
-    Returns
-    -------
-    pl.DataFrame | None
-        文件存在时返回按日期升序排列的 DataFrame, 不存在时返回 None.
-    """
-    if not path.is_file():
-        logger.info(f"本地历史数据不存在, 跳过: {path}")
-        return None
-    df = pl.read_csv(path, schema_overrides={DATE_COLUMN: pl.Date})
-    return df.sort(DATE_COLUMN)

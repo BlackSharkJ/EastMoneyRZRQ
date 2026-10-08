@@ -150,6 +150,21 @@ def report_date() -> date:
 
 
 @pytest.fixture
+def db_path(tmp_path: Path) -> Path:
+    """测试用的临时 sqlite 库文件, 一开始并不存在."""
+    return tmp_path / "rzrq.sqlite3"
+
+
+@pytest.fixture
+def seeded_db(sample_df: pl.DataFrame, db_path: Path) -> Path:
+    """已写入 sample_df 的临时库, 返回库路径."""
+    from eastmoneyrzrq import storage
+
+    storage.save_daily(sample_df, db_path)
+    return db_path
+
+
+@pytest.fixture
 def png_file(tmp_path: Path) -> Path:
     """一个内容固定的假图片文件."""
     path = tmp_path / "fake.png"

@@ -1,9 +1,8 @@
-"""data 模块单元测试: 请求参数, JSONP 解析, 记录提取, DataFrame 整理与 CSV 读写."""
+"""data 模块单元测试: 请求参数, JSONP 解析, 记录提取与 DataFrame 整理."""
 
 import json
 from collections.abc import Callable
 from datetime import date
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -11,9 +10,6 @@ import polars as pl
 import pytest
 
 from eastmoneyrzrq import config, data
-
-# UTF-8 BOM 的字节序列, Excel 靠它识别编码
-BOM: bytes = b"\xef\xbb\xbf"
 
 Handler = Callable[[httpx.Request], httpx.Response]
 MakeClient = Callable[[Handler], httpx.Client]
@@ -351,35 +347,8 @@ def test_latest_date_returns_newest(raw_records: list[dict[str, Any]]) -> None:
     assert data.latest_date(df) == date(2026, 9, 30)
 
 
-def test_write_history_csv_has_bom_and_round_trips(
-    raw_records: list[dict[str, Any]], tmp_path: Path
-) -> None:
-    df = data.to_dataframe(raw_records)
-    out_path = tmp_path / "历史数据.csv"
-
-    returned = data.write_history_csv(df, out_path)
-
-    assert returned == out_path
-    raw_bytes = out_path.read_bytes()
-    assert raw_bytes.startswith(b"\xef\xbb\xbf")
-    assert raw_bytes.startswith(BOM)
-    assert "日期".encode() in raw_bytes
-
-    restored = data.read_history_csv(out_path)
-    assert isinstance(restored, pl.DataFrame)
-    assert restored.columns == list(data.OUTPUT_COLUMNS)
-    assert restored.schema[data.DATE_COLUMN] == pl.Date
-    assert restored[data.DATE_COLUMN].to_list() == [
-        date(2026, 9, 28),
-        date(2026, 9, 29),
-        date(2026, 9, 30),
-    ]
-    assert restored["融资净买额"].to_list() == [-30000000000.0, 0.0, 5000000000.0]
-    assert restored["融券净卖额"].to_list() == [-20000000.0, 0.0, 10000000.0]
-
-
 def test_config_paths_are_under_project_root() -> None:
-    assert config.HISTORY_CSV_PATH == config.PROJECT_ROOT / "两融信息.csv"
+    assert config.HISTORY_DB_PATH == config.PROJECT_ROOT / "rzrq.sqlite3"
     assert config.ENV_FILE_PATH == config.PROJECT_ROOT / ".env"
 
 
@@ -421,26 +390,3 @@ def test_fetch_raw_payload_creates_owned_client(
     assert data.fetch_raw_payload() == {"result": {"data": raw_records}}
     assert timeouts == [config.REQUEST_TIMEOUT]
     assert injected.is_closed is True
-
-
-def test_read_history_csv_returns_none_when_missing(tmp_path: Path) -> None:
-    missing = tmp_path / "not-exists.csv"
-    assert missing.exists() is False
-    assert data.read_history_csv(missing) is None
-
-
-def test_read_history_csv_sorts_and_keeps_date_dtype(tmp_path: Path) -> None:
-    csv_path = tmp_path / "unordered.csv"
-    header = ",".join(data.OUTPUT_COLUMNS)
-    rows = [
-        "2026-09-30,3.0,0.3,3.0,3.0,3.0,3.0,3.0,3.0,3.0,3.0,3.0",
-        "2026-09-01,1.0,0.1,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0",
-    ]
-    csv_path.write_bytes(BOM + ("\n".join([header, *rows]) + "\n").encode())
-
-    restored = data.read_history_csv(csv_path)
-    assert isinstance(restored, pl.DataFrame)
-    assert restored.schema[data.DATE_COLUMN] == pl.Date
-    assert restored[data.DATE_COLUMN].to_list() == [date(2026, 9, 1), date(2026, 9, 30)]
-    assert restored["融资余额"].to_list() == [1.0, 3.0]
-    assert data.latest_date(restored) == date(2026, 9, 30)

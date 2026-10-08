@@ -180,8 +180,9 @@ pyrightconfig.json
 .env
 
 # 运行产生的数据与图表产物
-两融信息.csv
-data.csv
+rzrq.sqlite3
+rzrq.sqlite3-wal
+rzrq.sqlite3-shm
 rzrq_report.html
 rzrq_report.png
 

@@ -7,15 +7,15 @@
 
 凡是混合图都让 Bar 当宿主图: ``Chart.overlap`` 只合并 legend 与 series, 另一张图的 yAxis 会被丢掉,
 所以第二条 y 轴必须用宿主的 ``extend_axis`` 建出来.
+
+静态资源服务的探活与临时自举在 ``assets`` 模块, 这里只管画图与截图.
 """
 
 import logging
-import socket
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final, TypedDict
 
-import httpx
 import polars as pl
 from playwright.sync_api import sync_playwright
 from pyecharts import options as opts
@@ -65,54 +65,6 @@ def update_assets_host() -> str:
     CurrentConfig.ONLINE_HOST = config.assets_base_url()  # type: ignore[reportAttributeAccessIssue]
     logger.debug(f"pyecharts 静态资源地址: {CurrentConfig.ONLINE_HOST}")
     return CurrentConfig.ONLINE_HOST
-
-
-def check_assets_server(*, timeout: float = 3.0, client: httpx.Client | None = None) -> bool:
-    """检查 pyecharts 静态资源服务是否可用.
-
-    先探测 TCP 端口是否存活, 再请求一个真实存在的资源文件确认目录存在,
-    两层都通过才返回 True, 避免服务没启动时继续渲染出空白图片.
-
-    Parameters
-    ----------
-    timeout : float, default=3.0
-        单次探测的超时时间, 单位秒.
-    client : httpx.Client | None, default=None
-        复用外部客户端 (测试里注入 MockTransport); 为 None 时用 httpx.get.
-
-    Returns
-    -------
-    bool
-        端口存活且资源文件可访问时返回 True, 否则返回 False.
-    """
-    host = config.assets_host()
-    port = config.assets_port()
-    probe_url = config.assets_probe_url()
-
-    # 第一层: TCP 端口是否有人监听, 服务没启动时在这里就会失败
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            pass
-    except OSError as exc:
-        logger.error(f"pyecharts 资源服务端口不可用: {host}:{port} ({exc})")
-        return False
-
-    # 第二层: 资源目录是否存在, 端口活着但目录缺失时 HTTP 状态码不是 200
-    try:
-        if client is None:
-            response = httpx.get(probe_url, timeout=timeout)
-        else:
-            response = client.get(probe_url)
-    except httpx.HTTPError as exc:
-        logger.error(f"pyecharts 资源请求失败: {probe_url} ({exc})")
-        return False
-
-    if response.status_code != 200:
-        logger.error(f"pyecharts 资源目录不可用, HTTP {response.status_code}: {probe_url}")
-        return False
-
-    logger.info(f"pyecharts 资源服务正常: {probe_url}")
-    return True
 
 
 def scaled_values(df: pl.DataFrame, column: str, divisor: float) -> AxisSeries:

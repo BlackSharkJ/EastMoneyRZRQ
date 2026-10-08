@@ -48,7 +48,7 @@ def test_module_entrypoint_prints_help() -> None:
     assert completed.returncode == 0
     assert completed.stdout.startswith("usage: eastmoneyrzrq")
     assert "--no-send" in completed.stdout
-    assert "--from-csv" in completed.stdout
+    assert "--from-db" in completed.stdout
     assert completed.stderr == ""
 
 

@@ -1,33 +1,28 @@
 # 提交前自动跑格式化与检查
 # 安装: uv run pre-commit install
 # 手动全量: uv run pre-commit run --all-files
+#
+# 全部用 local 钩子, 不走远端的 hook 仓库, 原因有两个:
+# 1. ruff / pyright / pytest 直接取 uv.lock 里的版本, 与 uv run 命令完全一致, 不会出现两套版本;
+# 2. 本机 pip 为远端 hook 仓库装构建依赖时会稳定截断下载 (IncompleteRead), 本地钩子不依赖网络.
 default_language_version:
   python: python3.13
 
 repos:
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
-    hooks:
-      - id: trailing-whitespace
-      - id: end-of-file-fixer
-      - id: check-yaml
-      - id: check-toml
-      - id: check-merge-conflict
-      - id: check-added-large-files
-        args: ["--maxkb=2048"]
-      - id: mixed-line-ending
-        args: ["--fix=lf"]
-        exclude: ^(Start\.bat|scripts/.*\.ps1)$
-
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.10
-    hooks:
-      - id: ruff-check
-        args: ["--fix"]
-      - id: ruff-format
-
   - repo: local
     hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+        require_serial: true
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+        require_serial: true
       - id: pyright
         name: pyright (standard)
         entry: uv run pyright
@@ -36,8 +31,8 @@ repos:
         pass_filenames: false
         stages: [pre-push]
       - id: pytest
-        name: pytest (unit)
-        entry: uv run pytest tests/unit -q
+        name: pytest (全部测试与覆盖率门禁)
+        entry: uv run pytest -q
         language: system
         types: [python]
         pass_filenames: false
