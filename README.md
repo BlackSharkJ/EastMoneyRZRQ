@@ -30,7 +30,7 @@ sqlite3 库长期累积, 绘图默认取最近 50 个交易日.
 
 - **Python 3.13** — 见 `.python-version`
 - **uv** — 包管理器, 安装方式见 https://docs.astral.sh/uv/
-- **pyecharts 静态资源** — 默认连 `127.0.0.1:8888` 上的 `/pyecharts_assets/v5/`, 该服务通常由外部进程
+- **[pyecharts 静态资源](https://github.com/pyecharts/pyecharts-assets.git)** — 默认连 `127.0.0.1:8888` 上的 `/pyecharts_assets/v5/`, 该服务通常由外部进程
   (例如 QMTStrategy/xtquant_trader) 提供. 端口没起时, 程序会尝试在同一个端口临时自举一个只读静态服务,
   资源目录按 `EASTMONEYRZRQ_ASSETS_DIR` → `./pyecharts-assets/assets` → `../pyecharts-assets/assets`
   的顺序查找; 找不到就报错退出. 地址用 `EASTMONEYRZRQ_ASSETS_HOST` / `EASTMONEYRZRQ_ASSETS_PORT`
@@ -64,7 +64,7 @@ cp .env.example .env
 ### 运行
 
 ```bash
-# Windows 双击即可, 等价于下面那条命令
+# Windows 双击即可, 等价于下面第一条命令
 Start.bat
 
 # 或者用 uv
