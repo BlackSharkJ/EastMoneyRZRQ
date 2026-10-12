@@ -74,20 +74,22 @@ def run(args: argparse.Namespace) -> int:
     config.setup_logging(logging.getLevelNamesMapping()[args.log_level])
     logger.info("开始运行两融日报")
 
-    with assets.ensure_assets_server() as assets_source:
-        if assets_source is None:
+    with assets.ensure_assets_server() as service:
+        if service is None:
             logger.error("pyecharts 静态资源不可用, 已中止本次运行")
             return EXIT_ASSETS_UNAVAILABLE
-        return _run_pipeline(args)
+        return _run_pipeline(args, service)
 
 
-def _run_pipeline(args: argparse.Namespace) -> int:
+def _run_pipeline(args: argparse.Namespace, service: assets.AssetsService) -> int:
     """执行抓取到推送的主体流程.
 
     Parameters
     ----------
     args : argparse.Namespace
         已解析的命令行参数.
+    service : assets.AssetsService
+        本次运行实际使用的静态资源服务, 自举时端口可能与配置不同.
 
     Returns
     -------
@@ -107,7 +109,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         return EXIT_DATA_MISSING
 
     report_date = data.latest_date(history)
-    png_path = charts.render_report(history)
+    png_path = charts.render_report(history, base_url=service.base_url)
     logger.info(f"报告日期 {report_date}, 窗口 {history.height} 个交易日, 图片 {png_path}")
 
     if args.no_send:

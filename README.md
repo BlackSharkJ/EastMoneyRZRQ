@@ -162,6 +162,14 @@ uv run pre-commit run --all-files
 **端口没起但也不想自举**
 设 `EASTMONEYRZRQ_ALLOW_TEMP_ASSETS_SERVER=0`, 此时端口不可用会直接以退出码 1 中止.
 
+**端口被别人占着, 又不想影响那个服务**
+不用管. 自举时会先试着绑配置端口, 绑不上就退到随机空闲端口, 只服务于本次截图,
+日志里会看到 `端口 ... 不可用, 改用随机空闲端口`.
+
+**外部服务在跑但很慢**
+探活用 HEAD 只取响应头, 不下载 1 MB 的 `echarts.min.js`, 所以服务端忙到传不动文件体也不会误判.
+真遇到响应头本身也超时 (连接 3 秒 / 读取 10 秒), 才会走自举兜底.
+
 **日志说找不到资源目录**
 把 pyecharts-assets 克隆到项目旁边 (`../pyecharts-assets/assets`), 或者用
 `EASTMONEYRZRQ_ASSETS_DIR` 直接指到那个目录 (该目录下要有 `v5/echarts.min.js`).

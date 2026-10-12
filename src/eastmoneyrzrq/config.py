@@ -39,6 +39,9 @@ ASSETS_VERSION_DIR: Final[str] = "v5"
 ASSETS_PATH: Final[str] = f"{ASSETS_URL_PREFIX}/{ASSETS_VERSION_DIR}/"
 # 用一个真实存在的资源文件当探针, 既能验证端口存活, 也能验证目录存在
 ASSETS_PROBE_FILE: Final[str] = "echarts.min.js"
+# 探活用 HEAD, 只拿响应头; 读取超时给宽一点, 以免外部服务忙时把健康服务误判成不可用
+PROBE_CONNECT_TIMEOUT: Final[float] = 3.0
+PROBE_READ_TIMEOUT: Final[float] = 10.0
 ASSETS_HOST_ENV: Final[str] = "EASTMONEYRZRQ_ASSETS_HOST"
 ASSETS_PORT_ENV: Final[str] = "EASTMONEYRZRQ_ASSETS_PORT"
 ASSETS_DIR_ENV: Final[str] = "EASTMONEYRZRQ_ASSETS_DIR"
@@ -97,26 +100,37 @@ def assets_port() -> int:
     return port
 
 
-def assets_base_url() -> str:
+def assets_base_url(port: int | None = None) -> str:
     """拼出 pyecharts 静态资源目录的基础 URL.
+
+    Parameters
+    ----------
+    port : int | None, default=None
+        指定端口, 为 None 时用配置里的端口. 自举服务落到随机端口时会传进来.
 
     Returns
     -------
     str
         形如 http://127.0.0.1:8888/pyecharts_assets/v5/ 的地址, 末尾带斜杠.
     """
-    return f"http://{assets_host()}:{assets_port()}/{ASSETS_PATH}"
+    actual_port = assets_port() if port is None else port
+    return f"http://{assets_host()}:{actual_port}/{ASSETS_PATH}"
 
 
-def assets_probe_url() -> str:
+def assets_probe_url(port: int | None = None) -> str:
     """拼出用于探活的静态资源文件 URL.
+
+    Parameters
+    ----------
+    port : int | None, default=None
+        指定端口, 为 None 时用配置里的端口.
 
     Returns
     -------
     str
         真实存在的资源文件地址, HTTP 200 才能证明端口存活且目录存在.
     """
-    return f"{assets_base_url()}{ASSETS_PROBE_FILE}"
+    return f"{assets_base_url(port)}{ASSETS_PROBE_FILE}"
 
 
 def asset_dir_candidates() -> tuple[Path, ...]:

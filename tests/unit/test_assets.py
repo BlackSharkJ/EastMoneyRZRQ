@@ -47,25 +47,108 @@ def test_check_assets_server_port_closed(monkeypatch: pytest.MonkeyPatch, closed
     assert assets.check_assets_server(timeout=1.0) is False
 
 
-def test_check_assets_server_ok(
+def _recording_probe_handler(
+    status: int = 200, *, head_status: int | None = None
+) -> tuple[Any, list[httpx.Request]]:
+    """造一个记录请求的 handler.
+
+    Parameters
+    ----------
+    status : int, default=200
+        非 HEAD 请求返回的状态码.
+    head_status : int | None, default=None
+        不为 None 时 HEAD 返回它, 用来模拟服务端不支持 HEAD.
+
+    Returns
+    -------
+    tuple[Any, list[httpx.Request]]
+        (handler, 收到的请求列表).
+    """
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.method == "HEAD" and head_status is not None:
+            return httpx.Response(head_status)
+        return httpx.Response(status)
+
+    return handler, seen
+
+
+def test_resolve_timeout_default_and_float() -> None:
+    """不传超时时用连接 3 秒 / 读取 10 秒, 传数字时四项统一."""
+    default = assets._resolve_timeout(None)
+    assert default is assets.PROBE_CLIENT_TIMEOUT
+    assert default.connect == config.PROBE_CONNECT_TIMEOUT == 3.0
+    assert default.read == config.PROBE_READ_TIMEOUT == 10.0
+
+    uniform = assets._resolve_timeout(1.5)
+    assert (uniform.connect, uniform.read, uniform.write, uniform.pool) == (1.5, 1.5, 1.5, 1.5)
+
+    explicit = httpx.Timeout(2.0, read=9.0)
+    assert assets._resolve_timeout(explicit) is explicit
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [(200, True), (206, True), (301, False), (404, False), (500, False)],
+)
+def test_is_ok_status(status: int, expected: bool) -> None:
+    """只有 200 与 206 算探活通过."""
+    assert assets._is_ok_status(status) is expected
+
+
+def test_check_assets_server_ok_uses_head_only(
     monkeypatch: pytest.MonkeyPatch,
     listening_port: int,
     make_client: Any,
 ) -> None:
+    """探活只发 HEAD, 不下载 1MB 的 echarts.min.js."""
     monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
     monkeypatch.setenv(config.ASSETS_PORT_ENV, str(listening_port))
-    seen: list[str] = []
+    handler, seen = _recording_probe_handler()
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(str(request.url))
-        return httpx.Response(200, json={"ok": True})
-
-    client = make_client(handler)
-    try:
+    with make_client(handler) as client:
         assert assets.check_assets_server(timeout=1.0, client=client) is True
-    finally:
-        client.close()
-    assert seen == [config.assets_probe_url()]
+
+    assert [request.method for request in seen] == ["HEAD"]
+    assert str(seen[0].url) == config.assets_probe_url()
+    assert seen[0].headers.get("range") is None
+
+
+@pytest.mark.parametrize("head_status", [405, 501])
+def test_check_assets_server_falls_back_to_range_get(
+    monkeypatch: pytest.MonkeyPatch,
+    listening_port: int,
+    make_client: Any,
+    head_status: int,
+) -> None:
+    """服务端不支持 HEAD 时退化成带 Range 的 GET, 仍然只要一个字节."""
+    monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
+    monkeypatch.setenv(config.ASSETS_PORT_ENV, str(listening_port))
+    handler, seen = _recording_probe_handler(206, head_status=head_status)
+
+    with make_client(handler) as client:
+        assert assets.check_assets_server(timeout=1.0, client=client) is True
+
+    assert [request.method for request in seen] == ["HEAD", "GET"]
+    assert seen[1].headers["range"] == "bytes=0-0"
+
+
+def test_check_assets_server_accepts_partial_content(
+    monkeypatch: pytest.MonkeyPatch,
+    listening_port: int,
+    make_client: Any,
+) -> None:
+    """206 也算资源存在."""
+    monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
+    monkeypatch.setenv(config.ASSETS_PORT_ENV, str(listening_port))
+    handler, seen = _recording_probe_handler(206)
+
+    with make_client(handler) as client:
+        assert assets.check_assets_server(timeout=1.0, client=client) is True
+
+    assert [request.method for request in seen] == ["HEAD"]
 
 
 def test_check_assets_server_rejects_non_200(
@@ -75,18 +158,13 @@ def test_check_assets_server_rejects_non_200(
 ) -> None:
     monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
     monkeypatch.setenv(config.ASSETS_PORT_ENV, str(listening_port))
-    seen: list[str] = []
+    handler, seen = _recording_probe_handler(404)
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(str(request.url))
-        return httpx.Response(404)
-
-    client = make_client(handler)
-    try:
+    with make_client(handler) as client:
         assert assets.check_assets_server(timeout=1.0, client=client) is False
-    finally:
-        client.close()
-    assert seen == [config.assets_probe_url()]
+
+    assert [request.method for request in seen] == ["HEAD"]
+    assert str(seen[0].url) == config.assets_probe_url()
 
 
 def test_check_assets_server_survives_connect_error(
@@ -100,30 +178,55 @@ def test_check_assets_server_survives_connect_error(
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("模拟连接失败", request=request)
 
-    client = make_client(handler)
-    try:
+    with make_client(handler) as client:
         assert assets.check_assets_server(timeout=1.0, client=client) is False
-    finally:
-        client.close()
 
 
-def test_check_assets_server_uses_httpx_get_without_client(
-    monkeypatch: pytest.MonkeyPatch,
-    listening_port: int,
+def test_check_assets_server_owns_client_when_not_injected(
+    monkeypatch: pytest.MonkeyPatch, listening_port: int
 ) -> None:
-    """不注入 client 时走 httpx.get 分支, 子进程/cli 场景就是这个路径."""
+    """不注入 client 时自己创建一个, 并且用解析好的超时设置."""
     monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
     monkeypatch.setenv(config.ASSETS_PORT_ENV, str(listening_port))
-    seen: list[tuple[str, float]] = []
+    seen: list[tuple[str, httpx.Timeout]] = []
 
-    def fake_get(url: str, timeout: float) -> httpx.Response:
-        seen.append((url, timeout))
-        return httpx.Response(200, json={"ok": True})
+    class _FakeClient:
+        def __init__(self, *, timeout: httpx.Timeout) -> None:
+            self.timeout = timeout
 
-    monkeypatch.setattr(assets.httpx, "get", fake_get)
+        def __enter__(self) -> "_FakeClient":
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def head(self, url: str) -> httpx.Response:
+            seen.append((url, self.timeout))
+            return httpx.Response(200)
+
+    monkeypatch.setattr(assets.httpx, "Client", _FakeClient)
 
     assert assets.check_assets_server(timeout=1.5) is True
-    assert seen == [(config.assets_probe_url(), 1.5)]
+    assert seen[0][0] == config.assets_probe_url()
+    assert seen[0][1].connect == 1.5
+
+
+def test_check_assets_server_prefers_port_from_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+    listening_port: int,
+    closed_port: int,
+    make_client: Any,
+) -> None:
+    """base_url 里的端口优先于配置端口, 自举落到随机端口后就是这么探的."""
+    monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
+    monkeypatch.setenv(config.ASSETS_PORT_ENV, str(closed_port))
+    handler, seen = _recording_probe_handler()
+    base_url = config.assets_base_url(listening_port)
+
+    with make_client(handler) as client:
+        assert assets.check_assets_server(base_url=base_url, timeout=1.0, client=client) is True
+
+    assert str(seen[0].url) == f"{base_url}{config.ASSETS_PROBE_FILE}"
 
 
 # --------------------------------------------------------------------------- #
@@ -232,10 +335,12 @@ def test_temporary_assets_server_serves_probe_file(
 
     with (
         httpx.Client(timeout=3.0) as client,
-        assets.temporary_assets_server(assets_dir=fake_assets_dir) as base_url,
+        assets.temporary_assets_server(assets_dir=fake_assets_dir) as service,
     ):
-        assert base_url == f"http://127.0.0.1:{closed_port}/{config.ASSETS_PATH}"
-        response = client.get(config.assets_probe_url())
+        assert service.source == assets.SOURCE_TEMPORARY
+        assert service.port == closed_port
+        assert service.base_url == config.assets_base_url(closed_port)
+        response = client.get(f"{service.base_url}{config.ASSETS_PROBE_FILE}")
         assert response.status_code == 200
         assert response.content == FAKE_ASSETS_BYTES
         assert assets.check_assets_server(timeout=1.0, client=client) is True
@@ -308,13 +413,53 @@ def test_temporary_assets_server_raises_when_probe_fails(
         pass
 
 
-def test_temporary_assets_server_raises_when_port_taken(
+def test_temporary_assets_server_falls_back_to_free_port(
     monkeypatch: pytest.MonkeyPatch, fake_assets_dir: Path, listening_port: int
 ) -> None:
+    """配置端口被占时换到随机空闲端口继续跑, 而不是直接把整次运行搞失败."""
+    monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
     monkeypatch.setenv(config.ASSETS_PORT_ENV, str(listening_port))
 
-    with pytest.raises(OSError), assets.temporary_assets_server(assets_dir=fake_assets_dir):
-        pass
+    with (
+        httpx.Client(timeout=3.0) as client,
+        assets.temporary_assets_server(assets_dir=fake_assets_dir) as service,
+    ):
+        assert service.source == assets.SOURCE_TEMPORARY
+        assert service.port != listening_port
+        assert service.port > 0
+        assert service.base_url == config.assets_base_url(service.port)
+        response = client.get(f"{service.base_url}{config.ASSETS_PROBE_FILE}")
+        assert response.content == FAKE_ASSETS_BYTES
+
+    # 换过去的随机端口在退出后也要释放
+    with pytest.raises(OSError):
+        socket.create_connection(("127.0.0.1", service.port), timeout=0.5).close()
+
+
+def test_bind_server_uses_requested_port_when_free(closed_port: int) -> None:
+    """端口空闲时就用配置的端口."""
+    handler = assets._assets_request_handler(Path.cwd())
+    server = assets._bind_server(handler, "127.0.0.1", closed_port)
+    try:
+        assert server.server_address[1] == closed_port
+    finally:
+        server.server_close()
+
+
+def test_bind_server_falls_back_when_port_taken(listening_port: int) -> None:
+    """端口被占时换到随机端口."""
+    handler = assets._assets_request_handler(Path.cwd())
+    server = assets._bind_server(handler, "127.0.0.1", listening_port)
+    try:
+        assert server.server_address[1] != listening_port
+        assert server.server_address[1] > 0
+    finally:
+        server.server_close()
+
+
+def test_reusable_http_server_does_not_set_so_reuseaddr() -> None:
+    """Windows 上 SO_REUSEADDR 会让撞端口报 WSAEACCES 并抢流量, 必须关掉."""
+    assert assets._ReusableHTTPServer.allow_reuse_address is False
 
 
 # --------------------------------------------------------------------------- #
@@ -332,8 +477,12 @@ def test_ensure_assets_server_uses_external(
         assets, "temporary_assets_server", lambda **kwargs: started.append(fake_assets_dir)
     )
 
-    with assets.ensure_assets_server() as source:
-        assert source == assets.SOURCE_EXTERNAL
+    with assets.ensure_assets_server() as service:
+        assert service == assets.AssetsService(
+            source=assets.SOURCE_EXTERNAL,
+            base_url=config.assets_base_url(),
+            port=config.assets_port(),
+        )
 
     assert started == []
 
@@ -345,9 +494,13 @@ def test_ensure_assets_server_starts_temporary(
     monkeypatch.setenv(config.ASSETS_PORT_ENV, str(closed_port))
     monkeypatch.setenv(config.ASSETS_DIR_ENV, str(fake_assets_dir))
 
-    with httpx.Client(timeout=3.0) as client, assets.ensure_assets_server(timeout=1.0) as source:
-        assert source == assets.SOURCE_TEMPORARY
-        assert client.get(config.assets_probe_url()).content == FAKE_ASSETS_BYTES
+    with httpx.Client(timeout=3.0) as client, assets.ensure_assets_server(timeout=1.0) as service:
+        assert service is not None
+        assert service.source == assets.SOURCE_TEMPORARY
+        assert service.port == closed_port
+        assert service.base_url == config.assets_base_url(closed_port)
+        probe = f"{service.base_url}{config.ASSETS_PROBE_FILE}"
+        assert client.get(probe).content == FAKE_ASSETS_BYTES
 
     with pytest.raises(OSError):
         socket.create_connection(("127.0.0.1", closed_port), timeout=0.5).close()
@@ -385,14 +538,39 @@ def test_ensure_assets_server_returns_none_on_bad_env_dir(
         assert source is None
 
 
-def test_ensure_assets_server_returns_none_when_port_taken_by_other_server(
+def test_ensure_assets_server_falls_back_when_port_taken(
     monkeypatch: pytest.MonkeyPatch, fake_assets_dir: Path, listening_port: int
 ) -> None:
+    """外部探测失败且端口被别人占着时, 换端口自举仍然能出图."""
+    monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
     monkeypatch.setenv(config.ASSETS_PORT_ENV, str(listening_port))
     monkeypatch.setenv(config.ASSETS_DIR_ENV, str(fake_assets_dir))
 
-    with assets.ensure_assets_server(timeout=0.5) as source:
-        assert source is None
+    with (
+        httpx.Client(timeout=3.0) as client,
+        assets.ensure_assets_server(timeout=0.5) as service,
+    ):
+        assert service is not None
+        assert service.source == assets.SOURCE_TEMPORARY
+        assert service.port != listening_port
+        probe = f"{service.base_url}{config.ASSETS_PROBE_FILE}"
+        assert client.get(probe).content == FAKE_ASSETS_BYTES
+
+
+def test_ensure_assets_server_returns_none_on_bind_error(
+    monkeypatch: pytest.MonkeyPatch, fake_assets_dir: Path, closed_port: int
+) -> None:
+    """连随机端口都绑不上时 (极端情况) 才返回 None."""
+    monkeypatch.setenv(config.ASSETS_PORT_ENV, str(closed_port))
+    monkeypatch.setenv(config.ASSETS_DIR_ENV, str(fake_assets_dir))
+
+    def boom(**kwargs: object) -> None:
+        raise OSError("模拟无法绑定任何端口")
+
+    monkeypatch.setattr(assets, "temporary_assets_server", boom)
+
+    with assets.ensure_assets_server(timeout=0.3) as service:
+        assert service is None
 
 
 def test_temporary_assets_server_head_request_guards_prefix(

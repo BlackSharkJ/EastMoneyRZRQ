@@ -462,3 +462,35 @@ def test_update_assets_host_sets_pyecharts_online_host(
     assert url == "http://127.0.0.1:9999/pyecharts_assets/v5/"
     assert url == config.assets_base_url()
     assert url == CurrentConfig.ONLINE_HOST
+
+
+def test_update_assets_host_accepts_explicit_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """自举服务落在随机端口时, 显式传入的地址要盖过配置里的地址."""
+    monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
+    monkeypatch.setenv(config.ASSETS_PORT_ENV, "8888")
+    fallback = "http://127.0.0.1:57261/pyecharts_assets/v5/"
+
+    url = charts.update_assets_host(fallback)
+
+    assert url == fallback
+    assert fallback == CurrentConfig.ONLINE_HOST
+    assert config.assets_base_url() == "http://127.0.0.1:8888/pyecharts_assets/v5/"
+
+
+def test_render_report_uses_explicit_base_url(
+    tmp_path: Path, chart_df: pl.DataFrame, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """render_report 收到 base_url 时, 生成的 HTML 必须引用那个地址."""
+    html_path = tmp_path / "report.html"
+    fallback = "http://127.0.0.1:57261/pyecharts_assets/v5/"
+    monkeypatch.setenv(config.ASSETS_HOST_ENV, "127.0.0.1")
+    monkeypatch.setenv(config.ASSETS_PORT_ENV, "8888")
+    monkeypatch.setattr(CurrentConfig, "ONLINE_HOST", "https://stale.invalid/")
+
+    charts.render_report(chart_df, html_path=html_path, snapshot=False, base_url=fallback)
+
+    assert fallback == CurrentConfig.ONLINE_HOST
+    assert fallback in html_path.read_text(encoding="utf-8")
+    assert "8888" not in html_path.read_text(encoding="utf-8")

@@ -104,18 +104,33 @@ bar.overlap(line)
 服务没起来时 pyecharts 生成的 HTML 缺少 echarts.min.js, 截图会是空白. 处理顺序是:
 
 ```
-ensure_assets_server()
-  ├─ check_assets_server()   TCP 通 + HTTP 200 → 用外部服务 (external)
+ensure_assets_server()  →  AssetsService(source, base_url, port) 或 None
+  ├─ check_assets_server()   TCP 通 + HEAD 探针 200/206 → 用外部服务 (external)
   ├─ 不允许自举 (环境变量关掉) → None → 退出码 1
   ├─ 找不到本地资源目录       → None → 退出码 1
-  ├─ 端口被别的进程占着       → None → 退出码 1
-  └─ 其余情况 → temporary_assets_server() 起临时服务 → temporary
+  └─ 其余情况 → temporary_assets_server() → temporary
+        ├─ 先在配置端口绑; 绑不上 (OSError) 就退到随机空闲端口
         └─ 流程结束后 finally 里 shutdown + server_close
 ```
 
 临时服务用标准库的 `ThreadingHTTPServer`: 绑定 `127.0.0.1` 与配置的端口, 只读本地资源目录,
 只响应带 `/pyecharts_assets/` 前缀的具体文件路径 (不列目录, HEAD 同样守前缀), 请求日志降到 debug.
-它和外部服务在同一个 URL 下提供同样的文件, 所以 `CurrentConfig.ONLINE_HOST` 不需要变.
+它和外部服务在同一个 URL 下提供同样的文件, 所以外部服务可用时 `CurrentConfig.ONLINE_HOST` 不需要变;
+自举落到随机端口时, 实际地址通过 `AssetsService.base_url` 传给 `render_report(..., base_url=...)`.
+
+### 3.1 三个踩过的坑
+
+**探活只用 HEAD.** 2026-10-12 的一次运行失败: 外部服务 (xt-trader) 那时很忙, 响应头 200 很快就回来了,
+但 1 MB 的 `echarts.min.js` 在 3 秒内没传完, 于是被误判成「服务不可用」. 现在探针只发 HEAD,
+不下载文件体; 服务端不支持 HEAD (405/501) 时才退化成带 `Range: bytes=0-0` 的 GET, 仍然只取一个字节.
+连接超时 3 秒, 读取超时放宽到 10 秒, 两者分开设置.
+
+**端口被占时换端口, 而不是失败.** 同一个场景里, 8888 本来就被 xt-trader 占着, 想在同端口自举必然失败.
+现在 `_bind_server` 绑不上就退到随机空闲端口 (bind port 0), 把实际地址交给渲染层, 出图不受影响.
+
+**监听 socket 不开 `SO_REUSEADDR`.** Python 的 `HTTPServer` 默认 `allow_reuse_address = 1`, 这在 Windows 上
+语义与 Linux 不同: 撞到别人占用的地址时报的是 `WSAEACCES (10013)` 而不是 `EADDRINUSE (10048)`, 很难查;
+真让它绑上还会出现同一端口两个监听抢流量. 所以 `_ReusableHTTPServer` 显式关掉它.
 
 ## 退出码
 

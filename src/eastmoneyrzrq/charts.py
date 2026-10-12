@@ -49,8 +49,13 @@ SCREENSHOT_EXTRA_HEIGHT: Final[int] = 100
 type AxisSeries = Any
 
 
-def update_assets_host() -> str:
-    """把 pyecharts 的静态资源地址指向本地服务.
+def update_assets_host(base_url: str | None = None) -> str:
+    """把 pyecharts 的静态资源地址指向本次运行实际在用的服务.
+
+    Parameters
+    ----------
+    base_url : str | None, default=None
+        实际可用的基础 URL; 为 None 时取配置里的地址.
 
     Returns
     -------
@@ -62,7 +67,8 @@ def update_assets_host() -> str:
     pyecharts 把 ``_CurrentConfig.ONLINE_HOST`` 声明成 Final, 静态类型检查会认为它不可写,
     但渲染引擎生成 ``<script>`` 标签时只认这个全局值, 所以只能覆盖它.
     """
-    CurrentConfig.ONLINE_HOST = config.assets_base_url()  # type: ignore[reportAttributeAccessIssue]
+    resolved = config.assets_base_url() if base_url is None else base_url
+    CurrentConfig.ONLINE_HOST = resolved  # type: ignore[reportAttributeAccessIssue]
     logger.debug(f"pyecharts 静态资源地址: {CurrentConfig.ONLINE_HOST}")
     return CurrentConfig.ONLINE_HOST
 
@@ -409,6 +415,7 @@ def render_report(
     html_path: Path = config.REPORT_HTML_PATH,
     png_path: Path = config.REPORT_PNG_PATH,
     snapshot: bool = True,
+    base_url: str | None = None,
 ) -> Path:
     """渲染报告页面并按需截图.
 
@@ -422,13 +429,15 @@ def render_report(
         截图输出路径.
     snapshot : bool, default=True
         是否调用 chromium 截图, 单测里通常关掉.
+    base_url : str | None, default=None
+        静态资源服务的实际地址; 为 None 时取配置里的地址.
 
     Returns
     -------
     Path
         截图路径; snapshot 为 False 时返回 HTML 路径.
     """
-    update_assets_host()
+    update_assets_host(base_url)
     html_file = Path(build_report_page(df).render(str(html_path)))
     logger.info(f"已渲染报告页面: {html_file}")
     if not snapshot:

@@ -25,14 +25,24 @@ def _parse(*flags: str) -> argparse.Namespace:
     return cli.build_parser().parse_args(list(flags))
 
 
+FAKE_BASE_URL = "http://127.0.0.1:8888/pyecharts_assets/v5/"
+FAKE_ASSETS_PORT = 8888
+
+
 def _fake_ensure_assets_server(
     source: str | None,
-) -> Callable[[], AbstractContextManager[str | None]]:
-    """造一个假的 ensure_assets_server: 只 yield 给定的来源, 不做真实探测."""
+    *,
+    base_url: str = FAKE_BASE_URL,
+    port: int = FAKE_ASSETS_PORT,
+) -> Callable[[], AbstractContextManager[assets.AssetsService | None]]:
+    """造一个假的 ensure_assets_server: 只 yield 给定的服务信息, 不做真实探测."""
 
     @contextmanager
-    def _context() -> Iterator[str | None]:
-        yield source
+    def _context() -> Iterator[assets.AssetsService | None]:
+        if source is None:
+            yield None
+            return
+        yield assets.AssetsService(source=source, base_url=base_url, port=port)
 
     return _context
 
@@ -43,6 +53,8 @@ def _stub_pipeline(
     flow_df: pl.DataFrame,
     png_path: Path,
     assets_source: str | None = assets.SOURCE_EXTERNAL,
+    base_url: str = FAKE_BASE_URL,
+    port: int = FAKE_ASSETS_PORT,
 ) -> dict[str, list]:
     """把 run 依赖的每一步换成记录器, 返回各步骤的调用记录.
 
@@ -56,6 +68,10 @@ def _stub_pipeline(
         render_report 返回的路径.
     assets_source : str | None, default=assets.SOURCE_EXTERNAL
         ensure_assets_server 交出的来源, 为 None 表示静态资源不可用.
+    base_url : str, default=FAKE_BASE_URL
+        假服务交出的静态资源地址.
+    port : int, default=FAKE_ASSETS_PORT
+        假服务的端口.
 
     Returns
     -------
@@ -70,6 +86,7 @@ def _stub_pipeline(
         "save": [],
         "read": [],
         "render": [],
+        "render_urls": [],
         "send": [],
         "latest": [],
         "count": [],
@@ -94,8 +111,9 @@ def _stub_pipeline(
         record["read"].append(days)
         return flow_df
 
-    def render(df: pl.DataFrame) -> Path:
+    def render(df: pl.DataFrame, *, base_url: str | None = None) -> Path:
         record["render"].append(df)
+        record["render_urls"].append(base_url)
         return png_path
 
     def send(report_date: ReportDate) -> None:
@@ -112,7 +130,9 @@ def _stub_pipeline(
     monkeypatch.setattr(cli.config, "load_env_file", load_env)
     monkeypatch.setattr(cli.config, "setup_logging", setup_logging)
     monkeypatch.setattr(
-        cli.assets, "ensure_assets_server", _fake_ensure_assets_server(assets_source)
+        cli.assets,
+        "ensure_assets_server",
+        _fake_ensure_assets_server(assets_source, base_url=base_url, port=port),
     )
     monkeypatch.setattr(cli.data, "fetch_dataframe", fetch)
     monkeypatch.setattr(cli.storage, "save_daily", save_daily)
@@ -200,6 +220,7 @@ def test_run_fetch_save_draw_and_send(
     assert record["read"] == [config.DEFAULT_PLOT_DAYS]
     assert record["render"] == [sample_df]
     assert record["render"][0] is sample_df
+    assert record["render_urls"] == [FAKE_BASE_URL]
     assert record["send"] == [cli.data.latest_date(sample_df)]
     assert record["send"] == [date(2026, 9, 30)]
     # 抓数分支会读一次诊断用的最新日期与总行数
@@ -316,19 +337,21 @@ def test_run_reads_real_sqlite_history(
     sample_df: pl.DataFrame,
 ) -> None:
     """把 HISTORY_DB_PATH 指向真库, 走完整 run 并断言读到了库里的 3 行."""
-    rendered: list[pl.DataFrame] = []
+    rendered: list[tuple[pl.DataFrame, str | None]] = []
     sent: list[date] = []
 
     monkeypatch.setattr(cli.config, "HISTORY_DB_PATH", seeded_db)
     monkeypatch.setattr(cli.config, "load_env_file", lambda: False)
     monkeypatch.setattr(cli.config, "setup_logging", lambda level: None)
     monkeypatch.setattr(
-        cli.assets, "ensure_assets_server", _fake_ensure_assets_server(assets.SOURCE_EXTERNAL)
+        cli.assets,
+        "ensure_assets_server",
+        _fake_ensure_assets_server(assets.SOURCE_EXTERNAL),
     )
     monkeypatch.setattr(
         cli.charts,
         "render_report",
-        lambda df: (rendered.append(df), tmp_path / "r.png")[1],
+        lambda df, *, base_url=None: (rendered.append((df, base_url)), tmp_path / "r.png")[1],
     )
     monkeypatch.setattr(cli.notify, "send_report", sent.append)
 
@@ -336,7 +359,8 @@ def test_run_reads_real_sqlite_history(
 
     assert exit_code == cli.EXIT_OK
     assert len(rendered) == 1
-    history = rendered[0]
+    history, render_base_url = rendered[0]
+    assert render_base_url == FAKE_BASE_URL
     assert history.height == 3
     assert history["日期"].to_list() == [
         date(2026, 9, 28),
@@ -346,3 +370,22 @@ def test_run_reads_real_sqlite_history(
     assert list(history.columns) == list(cli.data.OUTPUT_COLUMNS)
     assert history["融资余额"][-1] == 2_500_000_000_000
     assert sent == [date(2026, 9, 30)]
+
+
+def test_run_passes_temporary_service_base_url_to_render(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sample_df: pl.DataFrame
+) -> None:
+    """自举服务落在随机端口时, 渲染用的是随机端口的地址而不是配置里的 8888."""
+    fallback = "http://127.0.0.1:57261/pyecharts_assets/v5/"
+    record = _stub_pipeline(
+        monkeypatch,
+        flow_df=sample_df,
+        png_path=tmp_path / "r.png",
+        assets_source=assets.SOURCE_TEMPORARY,
+        base_url=fallback,
+        port=57261,
+    )
+
+    assert cli.run(_parse("--no-send")) == cli.EXIT_OK
+    assert record["render_urls"] == [fallback]
+    assert "8888" not in fallback
